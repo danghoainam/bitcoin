@@ -1,8 +1,11 @@
-import type { VercelRequest, VercelResponse } from '@vercel/node';
-import axios from 'axios';
-import TelegramBot from 'node-telegram-bot-api';
+const axios = require('axios');
+const TelegramBot = require('node-telegram-bot-api');
 
-function calculateRSI(closes: number[]): number {
+const TELEGRAM_TOKEN = '8744827165:AAE05TLhOcSw5Xekrbh0eVByyuEDzppThcM';
+const CHAT_ID = '-5297079278';
+const bot = new TelegramBot(TELEGRAM_TOKEN);
+
+function calculateRSI(closes) {
   let gains = 0;
   let losses = 0;
   for (let i = 1; i < closes.length; i++) {
@@ -17,41 +20,33 @@ function calculateRSI(closes: number[]): number {
   return 100 - (100 / (1 + rs));
 }
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
-  const CHAT_ID = process.env.CHAT_ID;
-
-  if (!TELEGRAM_TOKEN || !CHAT_ID) return res.status(500).json({ error: 'Missing config' });
-
-  const bot = new TelegramBot(TELEGRAM_TOKEN);
-
+async function test() {
+  console.log("🚀 Đang phân tích kỹ thuật từng đồng coin...");
+  
   try {
     const symbols = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT'];
-    
-    // 1. Lấy chỉ số Fear & Greed (Chỉ số chung)
     const fgRes = await axios.get('https://api.alternative.me/fng/');
     const sentiment = parseInt(fgRes.data.data[0].value);
 
-    // 2. Lấy dữ liệu 24h và RSI riêng cho từng con
     const analysisData = await Promise.all(symbols.map(async (s) => {
       const [ticker, kline] = await Promise.all([
         axios.get(`https://api.binance.com/api/v3/ticker/24hr?symbol=${s}`),
         axios.get(`https://api.binance.com/api/v3/klines?symbol=${s}&interval=1h&limit=15`)
       ]);
       
-      const closes = kline.data.map((k: any) => parseFloat(k[4]));
+      const closes = kline.data.map(k => parseFloat(k[4]));
       const rsi = calculateRSI(closes);
       
-      // Logic dự báo riêng cho từng con: Kết hợp Tâm lý chung + RSI riêng
       let trend = "⚖️ SIDEWAYS";
       let advice = "WAIT";
       let bullish = true;
 
-      if (sentiment < 35 && rsi < 40) {
+      // Logic: Kết hợp tâm lý chung + RSI riêng của từng con
+      if (sentiment < 40 && rsi < 40) {
         trend = "🚀 BULLISH";
         advice = "LONG";
         bullish = true;
-      } else if (sentiment > 65 && rsi > 60) {
+      } else if (sentiment > 60 && rsi > 60) {
         trend = "⚠️ BEARISH";
         advice = "SHORT";
         bullish = false;
@@ -69,14 +64,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         rsi: rsi.toFixed(2),
         trend,
         advice,
-        tp1: tp1.toFixed(s.includes('BNB') ? 2 : 1),
-        tp2: tp2.toFixed(s.includes('BNB') ? 2 : 1),
-        sl: sl.toFixed(s.includes('BNB') ? 2 : 1)
+        tp1: tp1.toLocaleString(),
+        tp2: tp2.toLocaleString(),
+        sl: sl.toLocaleString()
       };
     }));
 
     const message = `
-🎯 **TÍN HIỆU CHI TIẾT TỪNG COIN** 🎯
+🎯 **DỰ BÁO RIÊNG BIỆT TỪNG COIN** 🎯
 ----------------------------------
 🧠 Tâm lý thị trường: \`${sentiment}/100\`
 
@@ -88,12 +83,13 @@ ${analysisData.map(d => `
 ❌ SL: \`$${d.sl}\`
 `).join('')}
 ----------------------------------
-⏰ *Dự báo dựa trên RSI riêng biệt từng cặp.*
     `;
 
     await bot.sendMessage(CHAT_ID, message, { parse_mode: 'Markdown' });
-    return res.status(200).json({ success: true });
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+    console.log("🎉 THÀNH CÔNG: Bản tin dự báo riêng biệt đã được gửi!");
+  } catch (error) {
+    console.error("❌ LỖI:", error.message);
   }
 }
+
+test();
