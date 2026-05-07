@@ -15,24 +15,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const fgRes = await axios.get('https://api.alternative.me/fng/');
     const sentiment = parseInt(fgRes.data.data[0].value);
 
-    // 2. Lấy giá từ CoinCap (Không bị chặn trên Vercel)
+    // 2. Lấy giá từ CoinGecko (Nguồn uy tín nhất cho Vercel)
+    const cgRes = await axios.get('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum,binancecoin&vs_currencies=usd&include_24hr_change=true');
+    const data = cgRes.data;
+
     const coins = [
-      { id: 'bitcoin', symbol: 'BTC' },
-      { id: 'ethereum', symbol: 'ETH' },
-      { id: 'binance-coin', symbol: 'BNB' }
+      { id: 'bitcoin', symbol: 'BTC', name: 'bitcoin' },
+      { id: 'ethereum', symbol: 'ETH', name: 'ethereum' },
+      { id: 'binancecoin', symbol: 'BNB', name: 'binancecoin' }
     ];
 
-    const responses = await Promise.all(
-      coins.map(coin => axios.get(`https://api.coincap.io/v2/assets/${coin.id}`))
-    );
-
-    const analysisData = responses.map((response, index) => {
-      const data = response.data.data;
-      const coin = coins[index];
-      const price = parseFloat(data.priceUsd);
-      const change24h = parseFloat(data.changePercent24Hr);
+    const analysisData = coins.map(coin => {
+      const price = data[coin.id].usd;
+      const change24h = data[coin.id].usd_24h_change;
       
-      // Logic dự báo dựa trên kết hợp Sentiment + 24h Change
       let trend = "⚖️ SIDEWAYS";
       let advice = "WAIT";
       let isBullish = true;
@@ -47,20 +43,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         isBullish = false;
       }
 
-      // Tính toán TP/SL
       const tp1 = isBullish ? price * 1.02 : price * 0.98;
       const tp2 = isBullish ? price * 1.05 : price * 0.95;
       const sl = isBullish ? price * 0.97 : price * 1.03;
 
       return {
         symbol: coin.symbol,
-        price: price > 100 ? price.toLocaleString() : price.toFixed(2),
+        price: price.toLocaleString(),
         change: change24h.toFixed(2),
         trend,
         advice,
-        tp1: tp1 > 100 ? tp1.toLocaleString() : tp1.toFixed(2),
-        tp2: tp2 > 100 ? tp2.toLocaleString() : tp2.toFixed(2),
-        sl: sl > 100 ? sl.toLocaleString() : sl.toFixed(2)
+        tp1: tp1.toLocaleString(),
+        tp2: tp2.toLocaleString(),
+        sl: sl.toLocaleString()
       };
     });
 
