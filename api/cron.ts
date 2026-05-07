@@ -2,6 +2,22 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import axios from 'axios';
 import TelegramBot from 'node-telegram-bot-api';
 
+function calculateRSI(closes: number[]): number {
+  if (closes.length < 15) return 50;
+  let gains = 0;
+  let losses = 0;
+  for (let i = 1; i < 15; i++) {
+    const diff = closes[i] - closes[i - 1];
+    if (diff >= 0) gains += diff;
+    else losses -= diff;
+  }
+  let avgGain = gains / 14;
+  let avgLoss = losses / 14;
+  if (avgLoss === 0) return 100;
+  const rs = avgGain / avgLoss;
+  return 100 - (100 / (1 + rs));
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
   const CHAT_ID = process.env.CHAT_ID;
@@ -11,75 +27,95 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const bot = new TelegramBot(TELEGRAM_TOKEN);
 
   try {
-    // 1. Lấy chỉ số Fear & Greed (Chỉ số chung)
     const fgRes = await axios.get('https://api.alternative.me/fng/');
     const sentiment = parseInt(fgRes.data.data[0].value);
 
-    // 2. Lấy giá từ CoinGecko (Nguồn uy tín nhất cho Vercel)
-    const cgRes = await axios.get('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum,binancecoin&vs_currencies=usd&include_24hr_change=true');
-    const data = cgRes.data;
-
-    const coins = [
-      { id: 'bitcoin', symbol: 'BTC', name: 'bitcoin' },
-      { id: 'ethereum', symbol: 'ETH', name: 'ethereum' },
-      { id: 'binancecoin', symbol: 'BNB', name: 'binancecoin' }
+    const assets = [
+      { id: 'bitcoin', symbol: 'BTC', bitfinexId: 'tBTCUSD' },
+      { id: 'ethereum', symbol: 'ETH', bitfinexId: 'tETHUSD' },
+      { id: 'binancecoin', symbol: 'BNB', bitfinexId: 'tBNBUSD' },
+      { id: 'pax-gold', symbol: 'XAU (VÀNG)', bitfinexId: 'tXAUUSD' }
     ];
 
-    const analysisData = coins.map(coin => {
-      const price = data[coin.id].usd;
-      const change24h = data[coin.id].usd_24h_change;
-      
-      let trend = "⚖️ SIDEWAYS";
-      let advice = "WAIT";
-      let isBullish = true;
+    const cgRes = await axios.get('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum,binancecoin,pax-gold&vs_currencies=usd&include_24hr_change=true');
+    const priceData = cgRes.data;
 
-      if (sentiment < 35 && change24h < -2) {
-        trend = "🚀 BULLISH";
-        advice = "LONG";
-        isBullish = true;
-      } else if (sentiment > 65 && change24h > 2) {
-        trend = "⚠️ BEARISH";
-        advice = "SHORT";
-        isBullish = false;
-      }
+    const analysisData = await Promise.all(assets.map(async (asset) => {
+      try {
+        const candleRes = await axios.get(`https://api-pub.bitfinex.com/v2/candles/trade:1h:${asset.bitfinexId}/hist?limit=20`);
+        const closes = candleRes.data.map((c: any) => c[2]).reverse();
+        const rsi = calculateRSI(closes);
+        
+        const price = priceData[asset.id].usd;
+        const change24h = priceData[asset.id].usd_24h_change;
 
-      const tp1 = isBullish ? price * 1.02 : price * 0.98;
-      const tp2 = isBullish ? price * 1.05 : price * 0.95;
-      const sl = isBullish ? price * 0.97 : price * 1.03;
+        let trend = "⚖️ SIDEWAYS";
+        let advice = "WAIT";
+        let isBullish = true;
 
-      return {
-        symbol: coin.symbol,
-        price: price.toLocaleString(),
-        change: change24h.toFixed(2),
-        trend,
-        advice,
-        tp1: tp1.toLocaleString(),
-        tp2: tp2.toLocaleString(),
-        sl: sl.toLocaleString()
-      };
-    });
+        // Nới lỏng điều kiện để nhạy hơn
+        // RSI < 45: Xu hướng tăng | RSI > 55: Xu hướng giảm
+        if (rsi <= 45) {
+          if (rsi < 35 || sentiment < 35) {
+            trend = "🔥 STRONG BULLISH";
+            advice = "STRONG LONG";
+          } else {
+            trend = "🚀 BULLISH bias";
+            advice = "LONG (BUY)";
+          }
+          isBullish = true;
+        } else if (rsi >= 55) {
+          if (rsi > 65 || sentiment > 65) {
+            trend = "💀 STRONG BEARISH";
+            advice = "STRONG SHORT";
+          } else {
+            trend = "⚠️ BEARISH bias";
+            advice = "SHORT (SELL)";
+          }
+          isBullish = false;
+        }
+
+        const tp1 = isBullish ? price * 1.012 : price * 0.988;
+        const tp2 = isBullish ? price * 1.025 : price * 0.975;
+        const sl = isBullish ? price * 0.985 : price * 1.015;
+
+        return {
+          symbol: asset.symbol,
+          price: price.toLocaleString(),
+          change: change24h.toFixed(2),
+          rsi: rsi.toFixed(2),
+          trend,
+          advice,
+          tp1: tp1.toLocaleString(),
+          tp2: tp2.toLocaleString(),
+          sl: sl.toLocaleString()
+        };
+      } catch (e) { return null; }
+    }));
+
+    const validData = analysisData.filter(d => d !== null);
 
     const message = `
-🎯 **TÍN HIỆU CHI TIẾT TỪNG COIN** 🎯
+🤖 **BOT PHÂN TÍCH THỊ TRƯỜNG (DYNAMIC)** 🤖
 ----------------------------------
-🧠 Tâm lý thị trường: \`${sentiment}/100\`
+🧠 Chỉ số F&G (Crypto): \`${sentiment}/100\`
 
-${analysisData.map(d => `
-**${d.symbol}** | Biến động: \`${d.change}%\`
-💰 Giá: \`$${d.price}\`
-📈 Dự báo: **${d.trend}** (${d.advice})
-🎯 TP: \`$${d.tp1}\` | \`$${d.tp2}\`
-❌ SL: \`$${d.sl}\`
+${validData.map(d => `
+**${d!.symbol}** | RSI: \`${d!.rsi}\`
+💰 Giá: \`$${d!.price}\` (${d!.change}%)
+📉 Xu hướng: **${d!.trend}**
+💡 Lời khuyên: **${d!.advice}**
+🎯 TP1: \`$${d!.tp1}\` | TP2: \`$${d!.tp2}\`
+🛑 SL: \`$${d!.sl}\`
 `).join('')}
 ----------------------------------
-⏰ *Dữ báo dựa trên biến động giá & tâm lý chung.*
+⏰ *Tín hiệu đã được tối ưu độ nhạy (Dynamic).*
     `;
 
     await bot.sendMessage(CHAT_ID, message, { parse_mode: 'Markdown' });
     return res.status(200).json({ success: true });
 
   } catch (error: any) {
-    console.error("Lỗi bot:", error.message);
     return res.status(500).json({ error: error.message });
   }
 }
